@@ -1,5 +1,7 @@
 #Author: Xian XIN
 
+#configuration file
+
 #add the download link of the reference genome and annotation file
 genome:
     genome_fasta_URL: ""
