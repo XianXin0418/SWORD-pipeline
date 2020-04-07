@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+#This program convert the sample table to yaml format and add it into the config.yaml
+
 #Usage:
 #preparing_yaml.py -s sampleTable.tsv -l [PE/SE] -o [Eu/Pr] -c config.yaml
 
