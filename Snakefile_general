@@ -1,4 +1,5 @@
 #Author: Xian XIN
+
 #Snakemake workflow for general RNA-Seq data analysis
 
 #state the configuration file and sample name
