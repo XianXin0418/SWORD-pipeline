@@ -1,4 +1,4 @@
-#sampleTable.tsv
+#sample table
 #Fill the table according to your sample data. If your data are single-ended, just fill the extension name into the forwardExtension column and make the reverseExtension column empty.
 #ATTENTION: This file should be a tab-delimited text file.
 #condition	sampleName	forwardExtension	reverseExtension
