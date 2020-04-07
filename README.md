@@ -2,9 +2,9 @@
 Snakemake Workflow of RNA-Seq Data Analysis
 
 Requirement:
-pre-installed Docker Engine
-Illumina sequencing file (.fastq, .fq, .fastq.gz, or .fq.gz)
-download link of reference genome and annotation file (optional)
+install the Docker Engine
+make a new directory /ABSOLUTE/PATH/TO/SWORD/data/ save your Illumina sequencing file (.fastq, .fq, .fastq.gz, or .fq.gz) into the data/
+prepare the download link of reference genome and annotation file (optional)
 
 Step 1:
 fill the sampleTable.tsv file based on your samples, fill the congif.yaml file according to your requirement, and use the preparing_yaml.py script to generate the final configuration file.
