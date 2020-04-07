@@ -1,0 +1,204 @@
+#Author: Xian XIN
+#Snakemake workflow for RNA-Seq data analysis without reference genome
+
+#state the configuration file and sample name
+configfile: '/sword/config.yaml'
+SAMPLES = {"control-1", "control-2", "control-3", "MYB176-OE-1", "MYB176-OE-2", "MYB176-OE-3"}
+
+#state the final output
+rule all:
+    input:
+        "/sword/results/Trinity/Trinity_trans.isoform.counts.matrix"
+
+#read trimming and quality control for SE or PE sequencing
+if str(config["layout"]) == "SE":
+    rule SE_trimming:
+        input: 
+            "/sword/data/fastq/{samples}.fq"
+        output:
+            "/sword/results/clean_data/{samples}.clean.fq"
+        message:
+            "trim low quality single-end sequence data"
+        log:
+            "/sword/data/fastq/{samples}.log"
+        params:
+            phred = config["trimming"]["phred"],
+            threads = config["trimming"]["threads"],
+            slidingWindow = config["trimming"]["slidingWindow"],
+            leading = config["trimming"]["leading"],
+            trailing = config["trimming"]["trailing"],
+            avgQual = config["trimming"]["avgQual"],
+            minLen = config["trimming"]["minLen"]
+        shell:
+            """
+            trimmomatic SE -threads {params.threads} {params.phred} -trimlog {log} {input} {output} SLIDINGWINDOW:{params.slidingWindow} LEADING:{params.leading} TRAILING:{params.trailing} AVGQUAL:{params.avgQual} MINLEN:{params.minLen}
+            """
+    
+    rule SE_fastqc:
+        input:
+            "/sword/results/clean_data/{samples}.clean.fq"
+        output:
+            "/sword/results/clean_data/{samples}.cleand_fastqc.zip"
+        message:
+            "quality control of trimmed single-end data"
+        shell:
+            """
+            fastqc -o /sword/results/clean_data/ {input}
+            """
+
+    rule SE_sample_file:
+        input:
+            expand("/sword/results/clean_data/{samples}.clean.fastq", samples = config["sample_list"])
+        output: 
+            "/sword/results/Trinity/samples.txt"
+        params:
+            treat = expand("{sampletreat}", sampletreat = config["sample_treatment"]),
+            name = expand("{sampleName}", sampleName = config["sample_name"])
+        message:
+            "create the samples.txt file for Trinity"
+        shell:
+            """
+            echo -e {params.treat}"\t"{params.name}"\t"{input} >> {output}
+            """
+
+elif str(config["layout"]) == "PE":
+    rule PE_trimming:
+        input:
+            fw = "/sword/data/fastq/{samples}_1.fq",
+            rv = "/sword/data/fastq/{samples}_2.fq"
+        output:
+            fwp = "/sword/results/clean_data/{samples}_1.paired.clean.fq",
+            rvp = "/sword/results/clean_data/{samples}_2.paired.clean.fq",
+            fwu = "/sword/results/clean_data/{samples}_1.unpaired.clean.fq",
+            rvu = "/sword/results/clean_data/{samples}_2.unpaired.clean.fq"
+        message:
+            "trim low quality paired-end sequence data"
+        log:
+            "/sword/results/clean_data/{samples}.clean.fq.log"
+        params:
+            phred = config["trimming"]["phred"],
+            threads = config["trimming"]["threads"],
+            slidingWindow = config["trimming"]["slidingWindow"],
+            leading = config["trimming"]["leading"],
+            trailing = config["trimming"]["trailing"],
+            avgQual = config["trimming"]["avgQual"],
+            minLen = config["trimming"]["minLen"]
+        shell:
+            """
+            trimmomatic PE -threads {params.threads} {params.phred} -trimlog {log} {input.fw} {input.rv} {output.fwp} {output.fwu} {output.rvp} {output.rvu} SLIDINGWINDOW:{params.slidingWindow} LEADING:{params.leading} TRAILING:{params.trailing} AVGQUAL:{params.avgQual} MINLEN:{params.minLen}
+            """
+    
+    rule PE_fastqc:
+        input:
+            fw = "/sword/results/clean_data/{samples}_1.paired.clean.fq",
+            rv = "/sword/results/clean_data/{samples}_2.paired.clean.fq"
+        output:
+            fw = "/sword/results/clean_data/{samples}_1.paired.clean_fastqc.zip",
+            rv = "/sword/results/clean_data/{samples}_2.paired.clean_fastqc.zip"
+        message:
+            "quality control of trimmed paired-end data"
+        shell:
+            """
+            fastqc -o /sword/results/clean_data/ {input.fw} &&\
+            fastqc -o /sword/results/clean_data/ {input.rv}
+            """
+
+    rule PE_sample_file:
+        input:
+            fw=expand("/sword/results/clean_data/{fwsamples}.paired.clean.fastq", fwsamples = config["fw_sample_list"]),
+            rv=expand("/sword/results/clean_data/{rvsamples}.paired.clean.fastq", rvsamples = config["rv_sample_list"])
+        output: 
+            "/sword/results/Trinity/samples.txt"
+        params:
+            treat = expand("{sampletreat}", sampletreat = config["sample_treatment"]),
+            name = expand("{sampleName}", sampleName = config["sample_name"])
+        message:
+            "create the samples.txt file for Trinity"
+        shell:
+            """
+            echo -e {params.treat}"\t"{params.name}"\t"{input.fw}"\t"{input.rv} >> {output}
+            """
+
+#assemble the reference transcriptome using Trinity
+rule trinity:
+    input:
+        "/sword/results/Trinity/samples.txt"
+    output:
+        "/sword/results/Trinity/Trinity_out_dir/"
+    params:
+        threads = config["trinity"]["threads"],
+        max_memory = config["trinity"]["max_memory"]
+    message:
+        "assemble transcriptome using Trinity"
+    log:
+        "/sword/results/Trinity/Trinity.assemble.log"
+    shell:
+        """
+        Trinity --seqType fq --max_memory {params.max_memory} --CPU {params.threads} --samples_file {input} --output {output} 2>{log}
+        """
+
+#read alignment and transcript count calculation using RSEM and Bowtie2
+if str(config["layout"]) == "SE":
+    rule SE_transcript_quantification:
+        input:
+            fq = expand("/sword/results/clean_data/{samples}.clean.fastq", samples = config["sample_list"])
+        output:
+            expand("/sword/results/Trinity/RSEM_out_dir/{sampleName}/", sampleName = config["sample_name"])
+        params:
+            transcripts = "/sword/results/Trinity/Trinity_out_dir/Trinity.fasta",
+            threads = config["trinity"]["threads"]
+        message:
+            "estimate transcript abundance"
+        log:
+            expand("/sword/results/Trinity/{sampleName}.RSEM.log", sampleName = config["sample_name"])
+        shell:
+            """
+            align_and_estimate_abundance.pl --transcripts {params.transcripts} --seqType fq --single {input.fq} --output_dir {output} --est_method RSEM --aln_method bowtie2 --thread_count {params.threads} --trinity_mode --prep_reference 2>{log}
+            """
+elif str(config["layout"]) == "PE":
+    rule PE_transcript_quantification:
+        input:
+            fw=expand("/sword/results/clean_data/{fwsamples}.paired.clean.fastq", fwsamples = config["fw_sample_list"]),
+            rv=expand("/sword/results/clean_data/{rvsamples}.paired.clean.fastq", rvsamples = config["rv_sample_list"])
+        output:
+            result = expand("/sword/results/Trinity/RSEM_out_dir/{sampleName}/RSEM.isoforms.results", sampleName = config["sample_name"])
+        params:
+            dir = expand("/sword/results/Trinity/RSEM_out_dir/{sampleName}/", sampleName = config["sample_name"]),
+            transcripts = "/sword/results/Trinity/Trinity_out_dir/Trinity.fasta",
+            threads = config["trinity"]["threads"]
+        message:
+            "estimate transcript abundance"
+        log:
+            expand("/sword/results/Trinity/{sampleName}.RSEM.log", sampleName = config["sample_name"])
+        shell:
+            """
+            align_and_estimate_abundance.pl --transcripts {params.transcripts} --seqType fq --left {input.fw} --right {input.rv} --output_dir {params.dir} --est_method RSEM --aln_method bowtie2 --thread_count {params.threads} --trinity_mode --prep_reference 2>{log}
+            """
+
+#produce the transcipt count matrix file
+rule count_matrix_quant_file:
+    input:
+        gene = expand("/sword/results/Trinity/RSEM_out_dir/{sampleName}/RSEM.genes.results", sampleName = config["sample_name"])
+        iso = expand("/sword/results/Trinity/RSEM_out_dir/{sampleName}/RSEM.isoforms.results", sampleName = config["sample_name"])
+    output:
+        "/sword/results/Trinity/quant.file"
+    message:
+        "create quant file for construct count matrix"
+    shell:
+        """
+        cd /sword/results/Trinity/ && \
+        echo {input.iso} >> {output}
+        """
+
+rule count_matrix:
+    input:
+        "/sword/results/Trinity/quant.file"
+    output:
+        "/sword/results/Trinity/Trinity_trans.isoform.counts.matrix"
+    message:
+        "build transcript expression matrix"
+    shell:
+        """
+        cd /sword/results/Trinity/ &&\
+        abundance_estimates_to_matrix.pl --est_method RSEM --gene_trans_map none --name_sample_by_basedir --out_prefix Trinity_trans --quant_files {input}
+        """

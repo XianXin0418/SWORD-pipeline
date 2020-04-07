@@ -1,0 +1,309 @@
+#Author: Xian XIN
+#Snakemake workflow for general RNA-Seq data analysis
+
+#state the configuration file and sample name
+configfile: '/sword/config.yaml'
+SAMPLES = {"control-1", "control-2", "control-3", "MYB176-OE-1", "MYB176-OE-2", "MYB176-OE-3"}
+
+#state the final output
+rule all:
+    input:
+        "/sword/results/count/transcript_count.tsv",
+        expand("/sword/results/count/{samples}.count.matrix", samples = SAMPLES),
+        expand("/sword/results/mapping/{samples}_sorted.bam", samples = SAMPLES),
+        expand("/sword/results/clean_data/{samples}_1.paired.clean_fastqc.zip", samples = SAMPLES),
+        expand("/sword/results/clean_data/{samples}_2.paired.clean_fastqc.zip", samples = SAMPLES)
+
+#download reference genome and annotation file
+rule get_genome_data:
+    output:
+        "/sword/data/genome/genome.fna"
+    message:
+        "download reference genome fasta file"
+    params:
+        genome_fasta_link = config["genome"]["genome_fasta_URL"]
+    shell:
+        "wget -O {output}.gz {params.genome_fasta_link} && gunzip {output}.gz"
+
+rule get_annotation_data:
+    output:
+        "/sword/data/genome/genome.gff"
+    message:
+        "download reference genome annotation gff file"
+    params:
+        genome_gff_link = config["genome"]["genome_gff_URL"]
+    shell:
+        "wget -O {output}3.gz {params.genome_gff_link} && gunzip {output}3.gz && gffread -E -O -T {output}3 -o {output}"
+
+#read trimming and quality control for SE or PE sequencing
+if str(config["layout"]) == "SE":
+    rule SE_trimming:
+        input: 
+            "/sword/data/fastq/{samples}.fq"
+        output:
+            "/sword/results/clean_data/{samples}.clean.fq"
+        message:
+            "trim low quality single-end sequence data"
+        log:
+            "/sword/data/fastq/{samples}.log"
+        params:
+            phred = config["trimming"]["phred"],
+            threads = config["trimming"]["threads"],
+            slidingWindow = config["trimming"]["slidingWindow"],
+            leading = config["trimming"]["leading"],
+            trailing = config["trimming"]["trailing"],
+            avgQual = config["trimming"]["avgQual"],
+            minLen = config["trimming"]["minLen"]
+        shell:
+            """
+            trimmomatic SE -threads {params.threads} {params.phred} -trimlog {log} {input} {output} SLIDINGWINDOW:{params.slidingWindow} LEADING:{params.leading} TRAILING:{params.trailing} AVGQUAL:{params.avgQual} MINLEN:{params.minLen}
+            """
+    
+    rule SE_fastqc:
+        input:
+            "/sword/results/clean_data/{samples}.clean.fq"
+        output:
+            "/sword/results/clean_data/{samples}.cleand_fastqc.zip"
+        message:
+            "quality control of trimmed single-end data"
+        shell:
+            """
+            fastqc -o /sword/results/clean_data/ {input}
+            """
+
+elif str(config["layout"]) == "PE":
+    rule PE_trimming:
+        input:
+            fw = "/sword/data/fastq/{samples}_1.fq",
+            rv = "/sword/data/fastq/{samples}_2.fq"
+        output:
+            fwp = "/sword/results/clean_data/{samples}_1.paired.clean.fq",
+            rvp = "/sword/results/clean_data/{samples}_2.paired.clean.fq",
+            fwu = "/sword/results/clean_data/{samples}_1.unpaired.clean.fq",
+            rvu = "/sword/results/clean_data/{samples}_2.unpaired.clean.fq"
+        message:
+            "trim low quality paired-end sequence data"
+        log:
+            "/sword/results/clean_data/{samples}.clean.fq.log"
+        params:
+            phred = config["trimming"]["phred"],
+            threads = config["trimming"]["threads"],
+            slidingWindow = config["trimming"]["slidingWindow"],
+            leading = config["trimming"]["leading"],
+            trailing = config["trimming"]["trailing"],
+            avgQual = config["trimming"]["avgQual"],
+            minLen = config["trimming"]["minLen"]
+        shell:
+            """
+            trimmomatic PE -threads {params.threads} {params.phred} -trimlog {log} {input.fw} {input.rv} {output.fwp} {output.fwu} {output.rvp} {output.rvu} SLIDINGWINDOW:{params.slidingWindow} LEADING:{params.leading} TRAILING:{params.trailing} AVGQUAL:{params.avgQual} MINLEN:{params.minLen}
+            """
+    
+    rule PE_fastqc:
+        input:
+            fw = "/sword/results/clean_data/{samples}_1.paired.clean.fq",
+            rv = "/sword/results/clean_data/{samples}_2.paired.clean.fq"
+        output:
+            fw = "/sword/results/clean_data/{samples}_1.paired.clean_fastqc.zip",
+            rv = "/sword/results/clean_data/{samples}_2.paired.clean_fastqc.zip"
+        message:
+            "quality control of trimmed paired-end data"
+        shell:
+            """
+            fastqc -o /sword/results/clean_data/ {input.fw} &&\
+            fastqc -o /sword/results/clean_data/ {input.rv}
+            """
+
+#read alignment using Bowtie2 or HISAT2 for prokaryotes or eukaryotes
+if str(config["organism"]) == "Pr":
+    rule bowtie2_index:
+        input: 
+            "/sword/data/genome/genome.fna"
+        output:
+            "/sword/data/genome/genome.1.bt2"
+        params:
+            threads = config["mapping"]["threads"],
+            basename = "/sword/data/genome/genome"
+        log:
+            "/sword/data/genome/bowtie2_index.log"
+        message:
+            "build bowtie2 index for the reference genome"
+        shell:
+            """
+            bowtie2-build --threads {params.threads} {input} {params.basename} 2>{log}
+            """
+    
+    if str(config["layout"]) == "SE":
+        rule SE_bowtie2_align:
+            input:
+                fq = "/sword/results/clean_data/{samples}.clean.fq",
+                index = "/sword/data/genome/genome.1.bt2",
+                qc = "/sword/results/clean_data/{samples}.cleand_fastqc.zip"
+            output:
+                "/sword/results/mapping/{samples}.sam"
+            log:
+                "/sword/results/mapping/{samples}.log"
+            message:
+                "align single-end reads to reference genome using bowtie2"
+            params:
+                threads = config["mapping"]["threads"],
+                basename = "/sword/data/genome/genome",
+                phred = config["trimming"]["phred"]
+            shell:
+                """
+                bowtie2 -p {params.threads} -{params.phred} -x {params.basename} -U {input.fq} -S {output} 2>{log}
+                """
+
+    elif str(config["layout"]) == "PE":
+        rule PE_bowtie2_align:
+            input:
+                fw = "/sword/results/clean_data/{samples}_1.paired.clean.fq",
+                rv = "/sword/results/clean_data/{samples}_2.paired.clean.fq",
+                index = "/sword/data/genome/genome.1.bt2",
+                qc = "/sword/results/clean_data/{samples}_1.paired.clean_fastqc.zip"
+            output:
+                "/sword/results/mapping/{samples}.sam"
+            log:
+                "/sword/results/mapping/{samples}.log"
+            message:
+                "align paired-end reads to reference genome using bowtie2"
+            params:
+                threads = config["mapping"]["threads"],
+                basename = "/sword/data/genome/genome",
+                phred = config["trimming"]["phred"]            
+            shell:
+                """
+                bowtie2 -p {params.threads} -{params.phred} -x {params.basename} -1 {input.fw} -2 {input.rv} -S {output} 2>{log}
+                """
+
+elif str(config["organism"]) == "Eu":
+    rule hisat2_index:
+        input: 
+            "/sword/data/genome/genome.fna"
+        output:
+            "/sword/data/genome/genome.1.ht2"
+        params:
+            threads = config["mapping"]["threads"],
+            basename = "/sword/data/genome/genome"
+        log:
+            "/sword/data/genome/hisat2_index.log"
+        message:
+            "build HISAT2 index for the reference genome"
+        shell:
+            """
+            hisat2-build -p {params.threads} {input} {params.basename} 2>{log}
+            """
+
+    if str(config["layout"]) == "SE":
+        rule SE_hisat2_align:
+            input:
+                fq = "/sword/results/clean_data/{samples}.clean.fq",
+                index = "/sword/data/genome/genome.1.ht2",
+                qc = "/sword/results/clean_data/{samples}.cleand_fastqc.zip"
+            output:
+                "/sword/results/mapping/{samples}.sam"
+            log:
+                "/sword/results/mapping/{samples}.log"
+            message:
+                "align single-end reads to reference genome using HISAT2"
+            params:
+                threads = config["mapping"]["threads"],
+                basename = "/sword/data/genome/genome",
+                phred = config["trimming"]["phred"]            
+            shell:
+                """
+                hisat2 -p {params.threads} -{params.phred} -x {params.basename} -U {input.fq} -S {output} 2>{log}
+                """
+
+    elif str(config["layout"]) == "PE":
+        rule PE_hisat2_align:
+            input:
+                fw = "/sword/results/clean_data/{samples}_1.paired.clean.fq",
+                rv = "/sword/results/clean_data/{samples}_2.paired.clean.fq",
+                index = "/sword/data/genome/genome.1.ht2",
+                qc = "/sword/results/clean_data/{samples}_1.paired.clean_fastqc.zip"
+            output:
+                "/sword/results/mapping/{samples}.sam"
+            log:
+                "/sword/results/mapping/{samples}.log"
+            message:
+                "align paired-end reads to reference genome using HISAT2"
+            params:
+                threads = config["mapping"]["threads"],
+                basename = "/sword/data/genome/genome",
+                phred = config["trimming"]["phred"]            
+            shell:
+                """
+                hisat2 -p {params.threads} -{params.phred} -x {params.basename} -1 {input.fw} -2 {input.rv} -S {output} 2>{log}
+                """        
+
+#convert SAM format to BAM format using samtools
+rule samtools:
+    input:
+        "/sword/results/mapping/{samples}.sam"
+    output:
+        bam = "/sword/results/mapping/{samples}.bam",
+        sort_bam = "/sword/results/mapping/{samples}_sorted.bam"
+    log:
+        "/sword/results/mapping/{samples}_sorted.bam.log"
+    message:
+        "convert sam file to bam file"
+    params:
+        threads = config["samtools"]["threads"]
+    shell:
+        """
+        samtools view -@ {params.threads} -S {input} -b > {output.bam} 2>>{log} && samtools sort -@ {params.threads} -o {output.sort_bam} {output.bam} 2>>{log} && samtools index -@ {params.threads} {output.sort_bam} 2>>{log} && rm {input}
+        """
+
+#calculate read count for each gene using HTSeq
+rule htseq:
+    input:
+        sort_bam = "/sword/results/mapping/{samples}_sorted.bam",
+        gff = "/sword/data/genome/genome.gff"
+    output:
+        "/sword/results/count/{samples}.count"
+    message:
+        "calculate the gene counts for each sample"
+    log:
+        "/sword/results/count/{samples}.log"
+    params:
+        count_mode = config["count"]["mode"]
+    shell:
+        """
+        htseq-count -i transcript_id -f bam -r pos -s no -m {params.count_mode} {input.sort_bam} {input.gff} | grep -v "^__" > {output} 2>{log}
+        """
+#produce the gene count matrix file
+rule merge_htseq:
+    input:
+        "/sword/results/count/{samples}.count"
+    output:
+        "/sword/results/count/{samples}.count.matrix"
+    params:
+        sample_base = lambda wildcards: wildcards.samples
+    message:
+        "convert count files into a count matrix per sample"
+    shell:
+        """
+        echo -e gene_id"\t"{params.sample_base} >> {output} && cat {input} >> {output}
+        """
+
+rule htseq_to_matrix:
+    input:
+        matrix = expand("/sword/results/count/{samples}.count.matrix", samples = SAMPLES)
+    output:
+        "/sword/results/count/transcript_count.tsv"
+    message:
+        "merge count matrix of each sample into a gene count table"
+    shell:
+        """
+        awk 'BEGIN {{OFS="\t"}} NR==FNR{{if(FNR==1){{f="Gene\t"FILENAME}};a[FNR]=$1;gene[$1]=$2;next}} {{if(FNR==1){{f=f"\t"FILENAME}};gene[$1]=gene[$1]"\t"$2}} END{{print f;for (i in a) print a[i]"\t"gene[a[i]]}}' /sword/results/count/*.count > {output}
+    
+        """
+
+
+
+
+
+
+
+
+

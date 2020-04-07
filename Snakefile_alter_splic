@@ -1,0 +1,293 @@
+#Author: Xian XIN
+#Snakemake workflow for alternative splicing analysis
+
+#state the configuration file and sample name
+configfile: '/sword/config.yaml'
+SAMPLES = {"control-1", "control-2", "control-3", "MYB176-OE-1", "MYB176-OE-2", "MYB176-OE-3"}
+
+#state the final output
+rule all:
+    input:
+        "/sword/results/alter_splic/gene_count_matrix.csv",
+        "/sword/results/alter_splic/transcript_count_matrix.csv",
+        expand("/sword/results/alter_splic/ballgown/{samples}/{samples}.gtf", samples = SAMPLES),
+        "/sword/results/alter_splic/stringtie_merged.gtf",
+        expand("/sword/results/alter_splic/{samples}.gtf", samples = SAMPLES),
+        expand("/sword/results/alter_splic/{samples}_sorted.bam", samples = SAMPLES),
+        expand("/sword/results/clean_data/{samples}_1.paired.clean_fastqc.zip", samples = SAMPLES),
+        expand("/sword/results/clean_data/{samples}_2.paired.clean_fastqc.zip", samples = SAMPLES)
+
+#download reference genome and annotation file
+rule get_genome_data:
+    output:
+        "/sword/data/genome/genome.fna"
+    message:
+        "download reference genome fasta file"
+    params:
+        genome_fasta_link = config["genome"]["genome_fasta_URL"]
+    shell:
+        "wget -O {output}.gz {params.genome_fasta_link} && gunzip {output}.gz"
+
+rule get_annotation_data:
+    output:
+        "/sword/data/genome/genome.gff"
+    message:
+        "download reference genome annotation gff file"
+    params:
+        genome_gff_link = config["genome"]["genome_gff_URL"]
+    shell:
+        "wget -O {output}.gz {params.genome_gff_link} && gunzip {output}.gz"
+
+#read trimming and quality control for SE or PE sequencing
+if str(config["layout"]) == "SE":
+    rule SE_trimming:
+        input: 
+            "/sword/data/fastq/{samples}.fq"
+        output:
+            "/sword/results/clean_data/{samples}.clean.fq"
+        message:
+            "trim low quality single-end sequence data"
+        log:
+            "/sword/data/fastq/{samples}.log"
+        params:
+            phred = config["trimming"]["phred"],
+            threads = config["trimming"]["threads"],
+            slidingWindow = config["trimming"]["slidingWindow"],
+            leading = config["trimming"]["leading"],
+            trailing = config["trimming"]["trailing"],
+            avgQual = config["trimming"]["avgQual"],
+            minLen = config["trimming"]["minLen"]
+        shell:
+            """
+            trimmomatic SE -threads {params.threads} {params.phred} -trimlog {log} {input} {output} SLIDINGWINDOW:{params.slidingWindow} LEADING:{params.leading} TRAILING:{params.trailing} AVGQUAL:{params.avgQual} MINLEN:{params.minLen}
+            """
+    
+    rule SE_fastqc:
+        input:
+            "/sword/results/clean_data/{samples}.clean.fq"
+        output:
+            "/sword/results/clean_data/{samples}.cleand_fastqc.zip"
+        message:
+            "quality control of trimmed single-end data"
+        shell:
+            """
+            fastqc -o /sword/results/clean_data/ {input}
+            """
+
+elif str(config["layout"]) == "PE":
+    rule PE_trimming:
+        input:
+            fw = "/sword/data/fastq/{samples}_1.fq",
+            rv = "/sword/data/fastq/{samples}_2.fq"
+        output:
+            fwp = "/sword/results/clean_data/{samples}_1.paired.clean.fq",
+            rvp = "/sword/results/clean_data/{samples}_2.paired.clean.fq",
+            fwu = "/sword/results/clean_data/{samples}_1.unpaired.clean.fq",
+            rvu = "/sword/results/clean_data/{samples}_2.unpaired.clean.fq"
+        message:
+            "trim low quality paired-end sequence data"
+        log:
+            "/sword/results/clean_data/{samples}.clean.fq.log"
+        params:
+            phred = config["trimming"]["phred"],
+            threads = config["trimming"]["threads"],
+            slidingWindow = config["trimming"]["slidingWindow"],
+            leading = config["trimming"]["leading"],
+            trailing = config["trimming"]["trailing"],
+            avgQual = config["trimming"]["avgQual"],
+            minLen = config["trimming"]["minLen"]
+        shell:
+            """
+            trimmomatic PE -threads {params.threads} {params.phred} -trimlog {log} {input.fw} {input.rv} {output.fwp} {output.fwu} {output.rvp} {output.rvu} SLIDINGWINDOW:{params.slidingWindow} LEADING:{params.leading} TRAILING:{params.trailing} AVGQUAL:{params.avgQual} MINLEN:{params.minLen}
+            """
+    
+    rule PE_fastqc:
+        input:
+            fw = "/sword/results/clean_data/{samples}_1.paired.clean.fq",
+            rv = "/sword/results/clean_data/{samples}_2.paired.clean.fq"
+        output:
+            fw = "/sword/results/clean_data/{samples}_1.paired.clean_fastqc.zip",
+            rv = "/sword/results/clean_data/{samples}_2.paired.clean_fastqc.zip"
+        message:
+            "quality control of trimmed paired-end data"
+        shell:
+            """
+            fastqc -o /sword/results/clean_data/ {input.fw} &&\
+            fastqc -o /sword/results/clean_data/ {input.rv}
+            """
+
+#read alignment using HISAT2
+if str(config["organism"]) == "Eu" and str(config["alternativeSplicing"]) == "true":
+    rule hisat2_index:
+        input: 
+            genome = "/sword/data/genome/genome.fna",
+            gff = "/sword/data/genome/genome.gff"
+        output:
+            gtf = "/sword/data/genome/genome.gtf",
+            ss = "/sword/data/genome/genome.ss",
+            exon = "/sword/data/genome/genome.exon",
+            index = "/sword/data/genome/genome_tran.1.ht2"
+        params:
+            threads = config["mapping"]["threads"],
+            basename = "/sword/data/genome/genome_tran"
+        log:
+            "/sword/data/genome/hisat2_index.log"
+        message:
+            "build HISAT2 index for the reference genome based on annotation information"
+        shell:
+            """
+            gffread -E -O -T {input.gff} -o {output.gtf} && hisat2_extract_splice_sites.py {output.gtf} > {output.ss} && hisat2_extract_exons.py {output.gtf} > {output.exon} && hisat2-build --ss {output.ss} --exon {output.exon} -p {params.threads} {input.genome} {params.basename} 2>{log}
+            """
+
+    if str(config["layout"]) == "SE":
+        rule SE_hisat2_align:
+            input:
+                fq = "/sword/results/clean_data/{samples}.clean.fq",
+                index = "/sword/data/genome/genome_tran.1.ht2",
+                qc = "/sword/results/clean_data/{samples}.cleand_fastqc.zip"
+            output:
+                "/sword/results/alter_splic/{samples}.sam"
+            log:
+                "/sword/results/alter_splic/{samples}.log"
+            message:
+                "align single-end reads to reference genome using HISAT2"
+            params:
+                threads = config["mapping"]["threads"],
+                basename = "/sword/data/genome/genome_tran",
+                phred = config["trimming"]["phred"]            
+            shell:
+                """
+                hisat2 --dta -p {params.threads} -{params.phred} -x {params.basename} -U {input.fq} -S {output} 2>{log}
+                """
+
+
+    elif str(config["layout"]) == "PE":
+        rule PE_hisat2_align:
+            input:
+                fw = "/sword/results/clean_data/{samples}_1.paired.clean.fq",
+                rv = "/sword/results/clean_data/{samples}_2.paired.clean.fq",
+                index = "/sword/data/genome/genome_tran.1.ht2",
+                qc = "/sword/results/clean_data/{samples}_1.paired.clean_fastqc.zip"
+            output:
+                "/sword/results/alter_splic/{samples}.sam"
+            log:
+                "/sword/results/alter_splic/{samples}.log"
+            message:
+                "align paired-end reads to reference genome using HISAT2"
+            params:
+                threads = config["mapping"]["threads"],
+                basename = "/sword/data/genome/genome_tran",
+                phred = config["trimming"]["phred"]            
+            shell:
+                """
+                hisat2 --dta -p {params.threads} -{params.phred} -x {params.basename} -1 {input.fw} -2 {input.rv} -S {output} 2>{log}
+                """        
+
+#convert SAM format to BAM format using samtools
+rule samtools:
+    input:
+        "/sword/results/alter_splic/{samples}.sam"
+    output:
+        bam = "/sword/results/alter_splic/{samples}.bam",
+        sort_bam = "/sword/results/alter_splic/{samples}_sorted.bam"
+    log:
+        "/sword/results/alter_splic/{samples}_sorted.bam.log"
+    message:
+        "convert sam file to bam file"
+    params:
+        threads = config["samtools"]["threads"]
+    shell:
+        """
+        samtools view -@ {params.threads} -S {input} -b > {output.bam} 2>>{log} && samtools sort -@ {params.threads} -o {output.sort_bam} {output.bam} 2>>{log} && samtools index -@ {params.threads} {output.sort_bam} 2>>{log} && rm {input}
+        """
+
+#reconstruct the transcriptome based on alignment results
+rule stringtie_assemble:
+    input:
+        sort_bam = "/sword/results/alter_splic/{samples}_sorted.bam",
+        gtf = "/sword/data/genome/genome.gtf"
+    output:
+        "/sword/results/alter_splic/{samples}.gtf"
+    log:
+        "/sword/results/alter_splic/{samples}.gtf.log"
+    message:
+        "assemble transcripts for each sample"
+    params:
+        threads = config["stringtie"]["threads"],
+        lable = lambda wildcards: wildcards.samples        
+    shell:
+        """
+        stringtie -p {params.threads} -G {input.gtf} -o {output} -l {params.lable} {input.sort_bam} 2>{log}
+        """
+
+rule merge_list:
+    input:
+        expand("/sword/results/alter_splic/{samples}.gtf", samples = SAMPLES)
+    output:
+        "/sword/results/alter_splic/merge_list.txt"
+    message:
+        "generate the merge list file"
+    shell:
+        """
+        for i in /sword/results/alter_splic/*.gtf; do echo $i >> {output}; done
+        """
+
+#generate the annotation file of reconstructed transcriptome
+rule stringtie_merge:
+    input:
+        mergefile = "/sword/results/alter_splic/merge_list.txt",
+        gtf = "/sword/data/genome/genome.gtf"
+    output:
+        "/sword/results/alter_splic/stringtie_merged.gtf"
+    log:
+        "/sword/results/alter_splic/stringtie_merged.gtf.log"
+    message:
+        "merge transcripts from all samples"
+    params:
+        threads = config["stringtie"]["threads"]
+    shell:
+        """
+        stringtie --merge -p {params.threads} -G {input.gtf} -o {output} {input.mergefile} 2>{log}
+        """
+
+#calculate the read count for each gene and transctript using StringTie
+rule stringtie_estimate:
+    input:
+        mergeGtf = "/sword/results/alter_splic/stringtie_merged.gtf",
+        sort_bam = "/sword/results/alter_splic/{samples}_sorted.bam"
+    output:
+        "/sword/results/alter_splic/ballgown/{samples}/{samples}.gtf"
+    log:
+        "/sword/results/alter_splic/ballgown/{samples}/{samples}.gtf.log"
+    message:
+        "estimate transcript abundances and create table counts"
+    params:
+        threads = config["stringtie"]["threads"]
+    shell:
+        """
+        stringtie -e -B -p {params.threads} -G {input.mergeGtf} -o {output} {input.sort_bam} 2>{log}
+        """
+
+#produce the gene count matrix file and transcript count matrix file
+rule prepDE:
+    input:
+        expand("/sword/results/alter_splic/ballgown/{samples}/{samples}.gtf", samples = SAMPLES)
+    output:
+        gene_count = "/sword/results/alter_splic/gene_count_matrix.csv",
+        transcript_count = "/sword/results/alter_splic/transcript_count_matrix.csv"
+    message:
+        "extract read count from stringtie result"
+    shell:
+        """
+        python2 /opt/conda/bin/prepDE.py -i /sword/results/alter_splic/ballgown/ -g {output.gene_count} -t {output.transcript_count}
+        """
+
+
+
+
+
+
+
+
+
+

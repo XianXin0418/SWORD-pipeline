@@ -1,0 +1,39 @@
+#Author: Xian XIN
+
+#add the download link of the reference genome and annotation file
+genome:
+    genome_fasta_URL: ""
+    genome_gff_URL: "" 
+
+#set the parameters of Trimmomatic
+trimming:
+    phred: "-phred33"
+    threads: "4"
+    slidingWindow: "5:20"
+    leading: "5"
+    trailing: "5"
+    avgQual: '28'
+    minLen: "80"
+
+#set the parameter of Bowtie2 or HISAT2
+mapping:
+    threads: "4"
+
+#set the parameter of Samtools
+samtools:
+    threads: "4"
+
+#set the parameter of HTSeq
+count:
+    mode: "intersection-nonempty"
+
+#set the parameter of StringTie
+stringtie:
+    threads: "4"
+
+#set the parameter of Trinity
+trinity:
+    threads: "4"
+    max_memory: "8G"
+
+#add other parameter by using preparing_yaml.py
